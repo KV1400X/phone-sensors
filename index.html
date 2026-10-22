@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0d1117">
+<title>Phone Sensors</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--fg:#111;--mut:#667;--acc:#0a7cff;--bd:#dde}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--card:#161b22;--fg:#e6edf3;--mut:#8b949e;--acc:#3fa0ff;--bd:#30363d}}
+body.dark{--bg:#0d1117;--card:#161b22;--fg:#e6edf3;--mut:#8b949e;--acc:#3fa0ff;--bd:#30363d}
+body.light{--bg:#f4f5f7;--card:#fff;--fg:#111;--mut:#667;--acc:#0a7cff;--bd:#dde}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px -apple-system,system-ui,sans-serif;padding:env(safe-area-inset-top) 10px 40px}
+header{position:sticky;top:0;background:var(--bg);padding:8px 0;z-index:5}
+h1{font-size:19px;margin:4px 0}a{color:var(--acc)}
+.bar{display:flex;flex-wrap:wrap;gap:6px}
+button{background:var(--acc);color:#fff;border:0;border-radius:9px;padding:9px 12px;font-size:14px;font-weight:600}
+button.sec{background:var(--card);color:var(--fg);border:1px solid var(--bd)}button.on{background:#d33}
+#status{color:var(--mut);font-size:12px;margin-top:4px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:10px;margin:10px 0}
+.card h2{font-size:15px;margin:0 0 6px;display:flex;justify-content:space-between}
+.hz{color:var(--mut);font-weight:400;font-size:12px}
+table{width:100%;border-collapse:collapse;font:12px ui-monospace,Menlo,monospace}
+td{padding:2px 3px}td.v{text-align:right;font-weight:600}td.m{text-align:right;color:var(--mut)}
+canvas{width:100%;height:60px;display:block;margin-top:6px}
+.na{color:var(--mut);font-style:italic}
+video{width:100%;border-radius:8px;margin-top:6px}
+#touchpad{height:90px;border:1px dashed var(--bd);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--mut);touch-action:none}
+</style></head><body>
+<header>
+<h1>📱 Phone Sensors</h1>
+<div class="bar">
+<button id="start">Start sensors</button>
+<button id="pause" class="sec">Pause</button>
+<button id="rec" class="sec">● Record</button>
+<button id="csv" class="sec">CSV</button>
+<button id="json" class="sec">JSON</button>
+<button id="theme" class="sec">◐</button>
+</div>
+<div id="status">Tap “Start sensors” (iOS needs a tap + HTTPS). <a href="https://kv1400x.github.io/align-at-home/">→ Align at Home</a></div>
+</header>
+<main id="cards"></main>
+<div class="card"><h2>Microphone level</h2><button id="mic" class="sec">Enable mic</button><div id="micv" class="na">off</div><canvas id="micc"></canvas></div>
+<div class="card"><h2>Camera preview</h2><button id="cam" class="sec">Enable camera</button><video id="vid" playsinline muted autoplay hidden></video></div>
+<div class="card"><h2>Touch test</h2><div id="touchpad">touch here</div></div>
+<script>
+'use strict';
+const $=s=>document.querySelector(s);
+const S={};let paused=false,recording=false,log=[],t0=performance.now();
+const COLORS=['#e5534b','#3fb950','#3fa0ff','#d29922','#a371f7','#39c5cf'];
+function card(id,title,fields,units){
+  const el=document.createElement('div');el.className='card';el.id='c_'+id;
+  el.innerHTML=`<h2>${title}<span class="hz">– Hz</span></h2><div class="body"><span class="na">waiting…</span></div><canvas></canvas>`;
+  $('#cards').appendChild(el);
+  S[id]={el,fields,units:units||{},n:0,last:0,hz:0,min:{},max:{},hist:[],vals:{},hzT:performance.now(),hzN:0,built:false};
+}
+function na(id,msg){const s=S[id];if(!s)return;s.el.querySelector('.body').innerHTML=`<span class="na">${msg||'Unavailable / not supported'}</span>`;s.el.querySelector('canvas').style.display='none';s.na=true}
+function fmt(v){return v==null?'—':typeof v==='number'?(Math.abs(v)>=1000?v.toFixed(0):v.toFixed(3)):String(v)}
+function push(id,obj){
+  if(paused)return;const s=S[id];if(!s)return;s.na=false;s.vals=obj;s.n++;s.hzN++;
+  const nums=[];for(const k of s.fields){const v=obj[k];if(typeof v==='number'&&isFinite(v)){s.min[k]=Math.min(s.min[k]??v,v);s.max[k]=Math.max(s.max[k]??v,v);nums.push(v)}else nums.push(null)}
+  s.hist.push(nums);if(s.hist.length>150)s.hist.shift();s.dirty=true;
+  if(recording)log.push({t:+(performance.now()-t0).toFixed(1),ts:Date.now(),src:id,...obj});
+}
+function render(){
+  const now=performance.now();
+  for(const id in S){const s=S[id];
+    if(now-s.hzT>=1000){s.hz=s.hzN*1000/(now-s.hzT);s.hzN=0;s.hzT=now;s.el.querySelector('.hz').textContent=s.hz.toFixed(1)+' Hz · '+s.n}
+    if(!s.dirty||s.na)continue;s.dirty=false;
+    const b=s.el.querySelector('.body');
+    if(!s.built){b.innerHTML='<table><tr><td></td><td class="v">value</td><td class="m">min</td><td class="m">max</td></tr>'+s.fields.map((k,i)=>`<tr><td style="color:${COLORS[i%6]}">${k}</td><td class="v" data-k="${k}"></td><td class="m" data-mn="${k}"></td><td class="m" data-mx="${k}"></td></tr>`).join('')+'</table>';s.built=true}
+    for(const k of s.fields){const u=s.units[k]?' '+s.units[k]:'';
+      b.querySelector(`[data-k="${k}"]`).textContent=fmt(s.vals[k])+u;
+      b.querySelector(`[data-mn="${k}"]`).textContent=fmt(s.min[k]);b.querySelector(`[data-mx="${k}"]`).textContent=fmt(s.max[k]);}
+    draw(s.el.querySelector('canvas'),s.hist,s.fields.length);
+  }
+  requestAnimationFrame(render);
+}
+function draw(c,h,n){
+  const d=devicePixelRatio||1,w=c.clientWidth*d,ht=60*d;if(c.width!==w){c.width=w;c.height=ht}
+  const x=c.getContext('2d');x.clearRect(0,0,w,ht);if(h.length<2)return;
+  let lo=Infinity,hi=-Infinity;for(const r of h)for(const v of r)if(v!=null){lo=Math.min(lo,v);hi=Math.max(hi,v)}
+  if(!isFinite(lo))return;if(hi-lo<1e-9){hi+=1;lo-=1}
+  x.lineWidth=1.5*d;
+  for(let i=0;i<n;i++){x.strokeStyle=COLORS[i%6];x.beginPath();let st=false;
+    h.forEach((r,j)=>{const v=r[i];if(v==null)return;const px=j/(149)*w,py=ht-(v-lo)/(hi-lo)*(ht-4*d)-2*d;st?x.lineTo(px,py):(x.moveTo(px,py),st=true)});x.stroke()}
+}
+// ---- cards
+const G='m/s²',DS='°/s',D='°';
+card('acc','Acceleration (no gravity)',['x','y','z'],{x:G,y:G,z:G});
+card('accg','Acceleration incl. gravity',['x','y','z'],{x:G,y:G,z:G});
+card('rot','Rotation rate',['alpha','beta','gamma'],{alpha:DS,beta:DS,gamma:DS});
+card('interval','Motion interval',['interval_ms'],{interval_ms:'ms'});
+card('ori','Device orientation',['alpha','beta','gamma','absolute','compassHeading','compassAccuracy'],{alpha:D,beta:D,gamma:D,compassHeading:D,compassAccuracy:'±°'});
+card('oriabs','Absolute orientation event',['alpha','beta','gamma'],{alpha:D,beta:D,gamma:D});
+const GS=[['Accelerometer',['x','y','z'],G],['LinearAccelerationSensor',['x','y','z'],G],['GravitySensor',['x','y','z'],G],['Gyroscope',['x','y','z'],'rad/s'],['Magnetometer',['x','y','z'],'µT'],['AbsoluteOrientationSensor',['qx','qy','qz','qw'],''],['RelativeOrientationSensor',['qx','qy','qz','qw'],''],['AmbientLightSensor',['illuminance'],'lux']];
+for(const [n,f,u] of GS){const um={};f.forEach(k=>um[k]=u);card('gs_'+n,'Generic: '+n,f,um)}
+card('geo','Geolocation',['lat','lon','altitude','accuracy','altAccuracy','speed','heading'],{altitude:'m',accuracy:'m',altAccuracy:'m',speed:'m/s',heading:D});
+card('scr','Screen / viewport',['angle','type','dpr','innerW','innerH','vvW','vvH','vvScale','screenW','screenH'],{angle:D,innerW:'px',innerH:'px',vvW:'px',vvH:'px',screenW:'px',screenH:'px'});
+card('bat','Battery',['level','charging','chargingTime','dischargingTime'],{level:'%',chargingTime:'s',dischargingTime:'s'});
+card('net','Network information',['online','effectiveType','type','downlink','rtt','saveData'],{downlink:'Mb/s',rtt:'ms'});
+card('touch','Touch',['touches','maxTouchPoints','x','y','force','radiusX','radiusY','altitudeAngle','azimuthAngle'],{x:'px',y:'px',radiusX:'px',radiusY:'px'});
+card('vis','Visibility / wake lock',['visibility','hasFocus','wakeLock'],{});
+card('mic','Mic level (see below)',['rms','peak'],{rms:'dBFS',peak:'dBFS'});
+// ---- always-on sources
+function screenInfo(){const o=screen.orientation,vv=window.visualViewport;
+  push('scr',{angle:o?o.angle:(window.orientation??null),type:o?o.type:'n/a',dpr:devicePixelRatio,innerW:innerWidth,innerH:innerHeight,vvW:vv?vv.width:null,vvH:vv?vv.height:null,vvScale:vv?vv.scale:null,screenW:screen.width,screenH:screen.height})}
+screenInfo();addEventListener('resize',screenInfo);addEventListener('orientationchange',screenInfo);if(screen.orientation)screen.orientation.addEventListener('change',screenInfo);
+if(window.visualViewport)visualViewport.addEventListener('resize',screenInfo);
+function netInfo(){const c=navigator.connection||navigator.mozConnection||navigator.webkitConnection;
+  push('net',{online:navigator.onLine,effectiveType:c?c.effectiveType:'n/a',type:c?c.type:'n/a',downlink:c?c.downlink:null,rtt:c?c.rtt:null,saveData:c?c.saveData:null});return c}
+const conn=netInfo();if(conn)conn.addEventListener('change',netInfo);addEventListener('online',netInfo);addEventListener('offline',netInfo);
+if(navigator.getBattery){navigator.getBattery().then(b=>{const u=()=>push('bat',{level:b.level*100,charging:b.charging,chargingTime:b.chargingTime,dischargingTime:b.dischargingTime});u();['levelchange','chargingchange','chargingtimechange','dischargingtimechange'].forEach(e=>b.addEventListener(e,u))}).catch(()=>na('bat'))}else na('bat','Battery API not supported (iOS Safari never exposes it)');
+let wl=null;
+function visInfo(){push('vis',{visibility:document.visibilityState,hasFocus:document.hasFocus(),wakeLock:wl&&!wl.released?'held':('wakeLock'in navigator?'released':'unsupported')})}
+visInfo();document.addEventListener('visibilitychange',()=>{visInfo();if(document.visibilityState==='visible'&&started)reqWake()});addEventListener('focus',visInfo);addEventListener('blur',visInfo);
+push('touch',{touches:0,maxTouchPoints:navigator.maxTouchPoints});
+function onTouch(e){const t=e.touches[0]||e.changedTouches[0];
+  push('touch',{touches:e.touches.length,maxTouchPoints:navigator.maxTouchPoints,x:t?t.clientX:null,y:t?t.clientY:null,force:t?t.force:null,radiusX:t?t.radiusX:null,radiusY:t?t.radiusY:null,altitudeAngle:t?t.altitudeAngle:null,azimuthAngle:t?t.azimuthAngle:null})}
+['touchstart','touchmove','touchend'].forEach(ev=>$('#touchpad').addEventListener(ev,e=>{e.preventDefault();onTouch(e)},{passive:false}));
+// ---- start
+let started=false;
+async function reqWake(){if('wakeLock'in navigator){try{wl=await navigator.wakeLock.request('screen');wl.addEventListener('release',visInfo)}catch(e){}}visInfo()}
+function status(m){$('#status').innerHTML=m+' · <a href="https://kv1400x.github.io/align-at-home/">→ Align at Home</a>'}
+$('#start').onclick=async()=>{
+  const msgs=[];
+  if(!window.isSecureContext)msgs.push('⚠ not HTTPS – sensors blocked');
+  try{if(window.DeviceMotionEvent&&typeof DeviceMotionEvent.requestPermission==='function'){msgs.push('motion: '+await DeviceMotionEvent.requestPermission())}}catch(e){msgs.push('motion err: '+e.message)}
+  try{if(window.DeviceOrientationEvent&&typeof DeviceOrientationEvent.requestPermission==='function'){msgs.push('orientation: '+await DeviceOrientationEvent.requestPermission())}}catch(e){msgs.push('orientation err: '+e.message)}
+  if(!started){started=true;startMotion();startGeneric();startGeo()}
+  reqWake();$('#start').textContent='Sensors running';status(msgs.join(' · ')||'running');
+};
+function startMotion(){
+  if(!window.DeviceMotionEvent){['acc','accg','rot','interval'].forEach(i=>na(i))}
+  else addEventListener('devicemotion',e=>{const a=e.acceleration,g=e.accelerationIncludingGravity,r=e.rotationRate;
+    if(a&&a.x!=null)push('acc',{x:a.x,y:a.y,z:a.z});if(g&&g.x!=null)push('accg',{x:g.x,y:g.y,z:g.z});
+    if(r&&r.alpha!=null)push('rot',{alpha:r.alpha,beta:r.beta,gamma:r.gamma});push('interval',{interval_ms:e.interval});});
+  if(!window.DeviceOrientationEvent)na('ori');
+  else addEventListener('deviceorientation',e=>push('ori',{alpha:e.alpha,beta:e.beta,gamma:e.gamma,absolute:e.absolute,compassHeading:e.webkitCompassHeading??null,compassAccuracy:e.webkitCompassAccuracy??null}));
+  if('ondeviceorientationabsolute'in window)addEventListener('deviceorientationabsolute',e=>push('oriabs',{alpha:e.alpha,beta:e.beta,gamma:e.gamma}));
+  else na('oriabs','deviceorientationabsolute not supported (iOS: use compassHeading above)');
+  setTimeout(()=>{for(const i of ['acc','accg','rot','ori'])if(S[i].n===0&&!S[i].na)na(i,'No events received (no sensor, permission denied, or not HTTPS)')},3000);
+}
+function startGeneric(){
+  for(const [n,f] of GS){const id='gs_'+n,C=window[n];
+    if(typeof C!=='function'){na(id,n+' not supported'+(n==='AmbientLightSensor'?' (needs Chrome flag)':''));continue}
+    try{const s=new C({frequency:60});
+      s.addEventListener('reading',()=>{if(s.quaternion){const q=s.quaternion;push(id,{qx:q[0],qy:q[1],qz:q[2],qw:q[3]})}else if('illuminance'in s)push(id,{illuminance:s.illuminance});else push(id,{x:s.x,y:s.y,z:s.z})});
+      s.addEventListener('error',e=>na(id,n+': '+(e.error&&e.error.name||'error')+' '+(e.error&&e.error.message||'')));s.start();
+    }catch(e){na(id,n+': '+e.name+' '+e.message)}}
+}
+function startGeo(){
+  if(!navigator.geolocation){na('geo');return}
+  navigator.geolocation.watchPosition(p=>{const c=p.coords;push('geo',{lat:c.latitude,lon:c.longitude,altitude:c.altitude,accuracy:c.accuracy,altAccuracy:c.altitudeAccuracy,speed:c.speed,heading:c.heading})},
+    e=>na('geo','Geolocation error: '+e.message),{enableHighAccuracy:true,maximumAge:0,timeout:20000});
+}
+// ---- pause/record/export
+$('#pause').onclick=()=>{paused=!paused;$('#pause').textContent=paused?'Resume':'Pause';$('#pause').classList.toggle('on',paused)};
+$('#rec').onclick=()=>{recording=!recording;if(recording){log=[];t0=performance.now()}$('#rec').textContent=recording?'■ Stop ('+0+')':'● Record ('+log.length+')';$('#rec').classList.toggle('on',recording)};
+setInterval(()=>{if(recording)$('#rec').textContent='■ Stop ('+log.length+')'},500);
+function toCSV(){const keys=['t','ts','src'];for(const r of log)for(const k in r)if(!keys.includes(k))keys.push(k);
+  return keys.join(',')+'\n'+log.map(r=>keys.map(k=>r[k]==null?'':JSON.stringify(r[k])).join(',')).join('\n')}
+async function exportData(kind){
+  if(!log.length){alert('Nothing recorded yet – tap Record first.');return}
+  const name='sensors-'+new Date().toISOString().replace(/[:.]/g,'-')+'.'+kind;
+  const blob=new Blob([kind==='csv'?toCSV():JSON.stringify(log,null,1)],{type:kind==='csv'?'text/csv':'application/json'});
+  const file=new File([blob],name,{type:blob.type});
+  if(navigator.canShare&&navigator.canShare({files:[file]})){try{await navigator.share({files:[file],title:name});return}catch(e){if(e.name==='AbortError')return}}
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),5000);
+}
+$('#csv').onclick=()=>exportData('csv');$('#json').onclick=()=>exportData('json');
+$('#theme').onclick=()=>{const b=document.body;b.className=b.classList.contains('dark')?'light':b.classList.contains('light')?'':'dark'};
+// ---- mic & camera
+$('#mic').onclick=async()=>{
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){$('#micv').textContent='getUserMedia unsupported';return}
+  try{const st=await navigator.mediaDevices.getUserMedia({audio:true});const ac=new(window.AudioContext||window.webkitAudioContext)();
+    const an=ac.createAnalyser();an.fftSize=2048;ac.createMediaStreamSource(st).connect(an);const buf=new Float32Array(an.fftSize);
+    $('#mic').disabled=true;const db=v=>v>0?20*Math.log10(v):-120;
+    (function loop(){an.getFloatTimeDomainData(buf);let s=0,pk=0;for(const v of buf){s+=v*v;pk=Math.max(pk,Math.abs(v))}
+      const r=db(Math.sqrt(s/buf.length)),p=db(pk);$('#micv').textContent=`RMS ${r.toFixed(1)} dBFS · peak ${p.toFixed(1)} dBFS`;push('mic',{rms:r,peak:p});
+      const c=$('#micc'),x=c.getContext('2d'),d=devicePixelRatio||1;c.width=c.clientWidth*d;c.height=60*d;x.fillStyle='#3fb950';x.fillRect(0,0,Math.max(0,(r+90)/90)*c.width,c.height);
+      requestAnimationFrame(loop)})();
+  }catch(e){$('#micv').textContent='Mic error: '+e.message}
+};
+$('#cam').onclick=async()=>{
+  try{const st=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});const v=$('#vid');v.srcObject=st;v.hidden=false;$('#cam').disabled=true}
+  catch(e){$('#cam').textContent='Camera error: '+e.message}
+};
+requestAnimationFrame(render);
+</script></body></html>
